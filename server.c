@@ -75,7 +75,7 @@ void* handle_connection(void* arg) {
     char buffer[BUFFER_SIZE];
     int n;
 
-    // Receive the initial message (either 'A' for agent or 'C' for client)
+    // Receive the initial message (either 'A' for agent or 'C'/'L' for client)
     n = recv(socket, buffer, BUFFER_SIZE - 1, 0);
     if (n <= 0) {
         if (n < 0) perror("Failed to receive initial message");
@@ -85,7 +85,7 @@ void* handle_connection(void* arg) {
     buffer[n] = '\0';
 
     char type = buffer[0];
-    if (type == 'C') { // Client
+    if (type == 'C') { // Client Shutdown Command
         // The message format is 'C' + client_id + ' ' + target_agent_id
         char *space_ptr = strchr(buffer + 1, ' ');
         if (space_ptr == NULL) {
@@ -109,6 +109,9 @@ void* handle_connection(void* arg) {
                         perror("Failed to send SHUTDOWN command to agent");
                     } else {
                         printf("Sent SHUTDOWN command to agent %s\n", target_id);
+                        // Optionally, send confirmation to client
+                        char confirmation[] = "Shutdown command sent successfully.\n";
+                        send(socket, confirmation, strlen(confirmation), 0);
                     }
                     found = 1;
                     break;
@@ -118,9 +121,36 @@ void* handle_connection(void* arg) {
 
             if (!found) {
                 printf("Agent %s not found or inactive\n", target_id);
+                char not_found[] = "Agent not found or inactive.\n";
+                send(socket, not_found, strlen(not_found), 0);
             }
         } else {
             printf("Privileges check failed for client %s targeting %s\n", client_id, target_id);
+            char no_privileges[] = "You do not have privileges to perform this action.\n";
+            send(socket, no_privileges, strlen(no_privileges), 0);
+        }
+        close(socket);
+    }
+    else if (type == 'L') { // Client List Request
+        printf("Client requested list of active agents.\n");
+        pthread_mutex_lock(&agents_mutex);
+        // Compile the list of active agents
+        char list[BUFFER_SIZE];
+        memset(list, 0, sizeof(list));
+        strcat(list, "Agent List:\n");
+        for (int i = 0; i < MAX_AGENTS; i++) {
+            if (agents[i].active) {
+                strcat(list, agents[i].id);
+                strcat(list, "\n");
+            }
+        }
+        pthread_mutex_unlock(&agents_mutex);
+
+        // Send the list to the client
+        if (send(socket, list, strlen(list), 0) < 0) {
+            perror("Failed to send agent list to client");
+        } else {
+            printf("Sent list of active agents to client.\n");
         }
         close(socket);
     }
@@ -141,6 +171,7 @@ void* handle_connection(void* arg) {
             buffer[n] = '\0';
             // Optionally handle additional messages from the agent
             // For example, agent could send status updates
+            printf("Received from agent %s: %s\n", id, buffer);
         }
     }
     else {
@@ -169,12 +200,14 @@ int main(int argc, char* argv[]) {
     sa.sa_flags = 0;
     sigaction(SIGINT, &sa, NULL);
 
+    // Define server address
     struct sockaddr_in server_addr;
     memset(&server_addr, 0, sizeof(server_addr)); // Initialize to zero
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(1100);
     server_addr.sin_addr.s_addr = INADDR_ANY;
 
+    // Bind the socket to the address and port
     n = bind(server_socket, (struct sockaddr*)&server_addr, sizeof(server_addr));
     if (n < 0) {
         perror("Failed to bind to port");
@@ -182,6 +215,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // Listen for incoming connections
     n = listen(server_socket, 5);
     if (n < 0) {
         perror("Failed to listen on port");
@@ -238,8 +272,3 @@ int main(int argc, char* argv[]) {
     printf("Server shutdown complete.\n");
     return 0;
 }
-
-
-// TODO:
-// 1. uprawnienia
-// 2. wyświetlanie agentów
