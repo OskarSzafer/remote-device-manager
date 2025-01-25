@@ -9,6 +9,7 @@
 
 #define MAX_AGENTS 50
 #define BUFFER_SIZE 1024
+#define PRIVILEGES_FILE "privileges.txt" // Name of the privileges file
 
 typedef struct {
     int socket;
@@ -60,13 +61,29 @@ void remove_agent(int socket) {
 }
 
 int check_privileges(char* client_id, char* target_id) {
-    // Implement privilege checking here
-    // Example: Only allow clients to control agents with the same prefix
-    // Modify this logic based on your actual requirements
-    if (strncmp(client_id, target_id, 3) == 0) {
-        return 1;
+    FILE *fp = fopen(PRIVILEGES_FILE, "r");
+    if (!fp) {
+        perror("Failed to open privileges file");
+        return 0; // Deny access if file cannot be opened
     }
-    return 1;
+
+    char line[256];
+    while (fgets(line, sizeof(line), fp)) {
+        // Ignore empty lines and comments
+        if (line[0] == '\n' || line[0] == '#') continue;
+
+        char file_client_id[32], file_agent_id[32];
+        // Parse the line for client_id and agent_id
+        if (sscanf(line, "%31s %31s", file_client_id, file_agent_id) == 2) {
+            if (strcmp(client_id, file_client_id) == 0 && strcmp(target_id, file_agent_id) == 0) {
+                fclose(fp);
+                return 1; // Privileged
+            }
+        }
+    }
+
+    fclose(fp);
+    return 0; // Not privileged
 }
 
 void* handle_connection(void* arg) {
@@ -169,8 +186,7 @@ void* handle_connection(void* arg) {
                 break;
             }
             buffer[n] = '\0';
-            // Optionally handle additional messages from the agent
-            // For example, agent could send status updates
+            
             printf("Received from agent %s: %s\n", id, buffer);
         }
     }
