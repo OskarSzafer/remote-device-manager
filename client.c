@@ -1,3 +1,4 @@
+// client.c
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,50 +11,29 @@
 
 void usage(const char* prog_name) {
     printf("Usage:\n");
-    printf("  %s <server_ip> <server_port> <client_id> <target_agent_id>\n", prog_name);
-    printf("  %s -l <server_ip> <server_port>\n", prog_name); // List agents
+    printf("  %s <server_ip> <server_port> <username> <password>\n", prog_name);
 }
 
 int main(int argc, char* argv[]) {
-    if (argc < 4) {
+    if (argc != 5) { // Required arguments: server_ip, server_port, username, password
         usage(argv[0]);
         return EXIT_FAILURE;
     }
 
-    int list_mode = 0;
-    const char* server_ip;
-    int server_port;
-    const char* client_id = NULL;
-    const char* target_agent_id = NULL;
+    const char* server_ip = argv[1];
+    int server_port = atoi(argv[2]);
+    const char* username = argv[3];
+    const char* password = argv[4];
 
-    if (strcmp(argv[1], "-l") == 0) {
-        if (argc != 4) {
-            usage(argv[0]);
-            return EXIT_FAILURE;
-        }
-        list_mode = 1;
-        server_ip = argv[2];
-        server_port = atoi(argv[3]);
-    } else {
-        if (argc != 5) {
-            usage(argv[0]);
-            return EXIT_FAILURE;
-        }
-        server_ip = argv[1];
-        server_port = atoi(argv[2]);
-        client_id = argv[3];
-        target_agent_id = argv[4];
+    // Validate input lengths to prevent buffer overflows
+    if (strlen(username) > 31) {
+        fprintf(stderr, "Error: username too long (max 31 characters).\n");
+        return EXIT_FAILURE;
+    }
 
-        // Validate input lengths to prevent buffer overflows
-        if (strlen(client_id) > 31) {
-            fprintf(stderr, "Error: client_id too long (max 31 characters).\n");
-            return EXIT_FAILURE;
-        }
-
-        if (strlen(target_agent_id) > 31) {
-            fprintf(stderr, "Error: target_agent_id too long (max 31 characters).\n");
-            return EXIT_FAILURE;
-        }
+    if (strlen(password) > 31) {
+        fprintf(stderr, "Error: password too long (max 31 characters).\n");
+        return EXIT_FAILURE;
     }
 
     // Create a TCP socket
@@ -85,59 +65,108 @@ int main(int argc, char* argv[]) {
 
     printf("Connected to server %s:%d\n", server_ip, server_port);
 
-    // Prepare and send the message based on mode
-    if (list_mode) {
-        // Prepare 'L' message for listing agents
-        char message[2]; // 'L' + '\0'
-        memset(message, 0, sizeof(message));
-        message[0] = 'L';
-        message[1] = '\0';
+    // Step 1: Send authentication message
+    // Format: "LOGIN <username> <password>\n"
+    char auth_message[BUFFER_SIZE];
+    snprintf(auth_message, sizeof(auth_message), "LOGIN %s %s\n", username, password);
 
-        if (send(sock, message, strlen(message), 0) < 0) {
-            perror("Failed to send list request");
-            close(sock);
-            return EXIT_FAILURE;
-        }
-
-        printf("Requested list of active agents.\n");
-    } else {
-        // Prepare 'C' message for shutdown command
-        char message[2 + 32 + 1 + 32 + 1]; // 'C' + client_id + ' ' + target_agent_id + '\0'
-        memset(message, 0, sizeof(message));
-        message[0] = 'C';
-        strncpy(message + 1, client_id, 31);
-        message[1 + strlen(client_id)] = ' ';
-        strncpy(message + 2 + strlen(client_id), target_agent_id, 31);
-        message[sizeof(message) - 1] = '\0'; // Ensure null-termination
-
-        if (send(sock, message, strlen(message), 0) < 0) {
-            perror("Failed to send shutdown command");
-            close(sock);
-            return EXIT_FAILURE;
-        }
-
-        printf("Sent client ID and target agent ID: %s\n", message +1); // Skip 'C'
+    if (send(sock, auth_message, strlen(auth_message), 0) < 0) {
+        perror("Failed to send authentication message");
+        close(sock);
+        return EXIT_FAILURE;
     }
 
-    printf("Waiting for server response...\n");
+    printf("Sent authentication message.\n");
 
-    char buffer[BUFFER_SIZE];
-    ssize_t bytes_received;
+    // Wait for authentication response
+    char auth_response[BUFFER_SIZE];
+    ssize_t auth_bytes = recv(sock, auth_response, sizeof(auth_response) - 1, 0);
+    if (auth_bytes <= 0) {
+        if (auth_bytes < 0) perror("Failed to receive authentication response");
+        else printf("Server closed the connection unexpectedly.\n");
+        close(sock);
+        return EXIT_FAILURE;
+    }
+    auth_response[auth_bytes] = '\0';
+    printf("Authentication response: %s", auth_response);
 
-    // Receive and display the response from the server
-    while ((bytes_received = recv(sock, buffer, sizeof(buffer) - 1, 0)) > 0) {
-        buffer[bytes_received] = '\0';
-        if (list_mode) {
-            printf("Active Agents:\n%s\n", buffer);
-        } else {
-            printf("Received from server: %s\n", buffer);
-        }
+    // Check if authentication was successful
+    if (strncmp(auth_response, "Authentication successful", 24) != 0) {
+        printf("Authentication failed. Exiting.\n");
+        close(sock);
+        return EXIT_FAILURE;
     }
 
-    if (bytes_received < 0) {
-        perror("Error receiving data from server");
-    } else {
-        printf("Server closed the connection.\n");
+    // Step 2: Enter command loop
+    printf("You can now enter commands. Available commands:\n");
+    printf("  LIST\n");
+    printf("  SHUTDOWN <agent_id>\n");
+    printf("  EXIT\n");
+
+    while (1) {
+        printf("Enter command: ");
+        char input[BUFFER_SIZE];
+        if (fgets(input, sizeof(input), stdin) == NULL) {
+            printf("\nInput error. Exiting.\n");
+            break;
+        }
+
+        // Remove trailing newline characters
+        input[strcspn(input, "\r\n")] = '\0';
+
+        // Validate and send the command
+        if (strncmp(input, "LIST", 4) == 0 && (input[4] == '\0' || input[4] == ' ')) {
+            // Send 'LIST' command
+            char command[5] = "LIST";
+            if (send(sock, command, strlen(command), 0) < 0) {
+                perror("Failed to send LIST command");
+                break;
+            }
+        }
+        else if (strncmp(input, "SHUTDOWN ", 9) == 0) {
+            // Extract agent_id
+            char agent_id[32];
+            if (sscanf(input + 9, "%31s", agent_id) != 1) {
+                printf("Invalid SHUTDOWN command format. Usage: SHUTDOWN <agent_id>\n");
+                continue;
+            }
+
+            // Prepare and send 'SHUTDOWN <agent_id>' command
+            char command[BUFFER_SIZE];
+            snprintf(command, sizeof(command), "SHUTDOWN %s", agent_id);
+            if (send(sock, command, strlen(command), 0) < 0) {
+                perror("Failed to send SHUTDOWN command");
+                break;
+            }
+        }
+        else if (strncmp(input, "EXIT", 4) == 0 && (input[4] == '\0' || input[4] == ' ')) {
+            // Send 'EXIT' command to close the connection
+            char command[5] = "EXIT";
+            if (send(sock, command, strlen(command), 0) < 0) {
+                perror("Failed to send EXIT command");
+            }
+            printf("Exiting as per request.\n");
+            break;
+        }
+        else {
+            printf("Unknown command. Available commands: LIST, SHUTDOWN <agent_id>, EXIT\n");
+            continue;
+        }
+
+        // Wait for server response
+        char response[BUFFER_SIZE];
+        ssize_t bytes_received = recv(sock, response, sizeof(response) - 1, 0);
+        if (bytes_received < 0) {
+            perror("Error receiving data from server");
+            break;
+        }
+        else if (bytes_received == 0) {
+            printf("Server closed the connection.\n");
+            break;
+        }
+
+        response[bytes_received] = '\0';
+        printf("Server response:\n%s\n", response);
     }
 
     // Close the socket
